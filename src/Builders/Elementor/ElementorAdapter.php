@@ -10,6 +10,7 @@ use LiveNetworks\BuilderConnector\Converter\Problem;
 use LiveNetworks\BuilderConnector\Converter\Revision;
 use LiveNetworks\BuilderConnector\Converter\SiteVocabulary;
 use LiveNetworks\BuilderConnector\DesignContext\DesignContextBuilder;
+use LiveNetworks\BuilderConnector\Install\Installer;
 use LiveNetworks\BuilderConnector\ManagedCss\ManagedCssManager;
 use LiveNetworks\BuilderConnector\Meta\MetaRepository;
 
@@ -651,11 +652,31 @@ final class ElementorAdapter implements BuilderAdapter
 
     public function buildSiteVocabulary(?MetaRepository $metaRepo = null): SiteVocabulary
     {
-        $metaRepo = $metaRepo ?? new MetaRepository();
-        $classNames = array_column($this->classes(), 'name');
-        $varNames = array_column($this->variables(), 'name');
+        // Elementor references classes by name (`_css_classes`), so the class "ID" is the name itself.
+        $classes = [];
+        foreach ($this->classes() as $cls) {
+            $name = is_array($cls) ? (string) ($cls['name'] ?? '') : '';
+            if ($name !== '') {
+                $classes[] = ['id' => $name, 'name' => $name];
+            }
+        }
 
-        return new SiteVocabulary($classNames, $varNames, $metaRepo);
+        $discipline = (string) get_option('ln_builder_token_discipline', 'strict');
+        $severity = $discipline === 'warn' ? Problem::SEVERITY_WARNING : Problem::SEVERITY_ERROR;
+
+        return new SiteVocabulary(
+            builder: 'elementor',
+            siteId: (string) get_option(Installer::OPTION_SITE_ID, ''),
+            extraSecret: Installer::extraSecret(),
+            classes: $classes,
+            variables: $this->variables(),
+            colors: $this->colors(),
+            allowedAreas: $this->capabilities()->areas(),
+            // Empty = every native name is accepted; unmapped widgets become signed passthrough nodes.
+            registeredElements: [],
+            extraEnabled: true,
+            tokenDiscipline: $severity,
+        );
     }
 
     public function elementRegistry(): array
@@ -796,8 +817,17 @@ final class ElementorAdapter implements BuilderAdapter
             $name = (string) ($item['name'] ?? 'container');
             $settings = is_array($item['settings'] ?? null) ? $item['settings'] : [];
 
-            $isContainer = in_array($name, ['section', 'container', 'block'], true);
-            $elType = $isContainer ? 'container' : 'widget';
+            // Lean container types map to Elementor flexbox containers (Expander always emits `container`).
+            // `section` / `column` only arrive from flattenNestedElements() (legacy layouts kept via passthrough).
+            $elType = match ($name) {
+                'container', 'block' => 'container',
+                'section', 'column' => $name,
+                default => 'widget',
+            };
+
+            if (isset($item['label']) && is_string($item['label']) && $item['label'] !== '' && !isset($settings['_title'])) {
+                $settings['_title'] = $item['label'];
+            }
 
             $node = [
                 'id' => $id,
@@ -806,9 +836,17 @@ final class ElementorAdapter implements BuilderAdapter
                 'elements' => [],
             ];
 
-            if (!$isContainer) {
+            // Restore other native top-level keys (isInner, isLocked, ...) preserved by flattenNestedElements()
+            foreach ($item as $k => $v) {
+                if (!in_array($k, ['id', 'name', 'parent', 'children', 'settings', 'label', 'elType', 'widgetType', 'elements'], true)) {
+                    $node[$k] = $v;
+                }
+            }
+
+            if ($elType === 'widget') {
                 $node['widgetType'] = $name;
-            } else {
+            } elseif ($elType === 'container') {
+                // Containers can be moved by patches, so nesting is always derived from the actual parent.
                 $node['isInner'] = ((string) ($item['parent'] ?? 0) !== '0');
             }
 
@@ -842,9 +880,11 @@ final class ElementorAdapter implements BuilderAdapter
         $traverse = static function (array $node, $parentId) use (&$traverse, &$flat): void {
             $id = (string) ($node['id'] ?? substr(bin2hex(random_bytes(4)), 0, 7));
             $elType = (string) ($node['elType'] ?? 'widget');
+            // Widgets are keyed by widgetType; structural nodes keep their elType (container / section / column)
+            // so legacy section/column layouts are not silently converted into containers on write-back.
             $name = ($elType === 'widget')
-                ? (string) ($node['widgetType'] ?? 'heading')
-                : 'container';
+                ? (string) ($node['widgetType'] ?? 'unknown')
+                : $elType;
 
             $settings = is_array($node['settings'] ?? null) ? $node['settings'] : [];
             $children = is_array($node['elements'] ?? null) ? $node['elements'] : [];
@@ -856,13 +896,20 @@ final class ElementorAdapter implements BuilderAdapter
                 }
             }
 
-            $flat[] = [
+            $flatNode = [
                 'id' => $id,
                 'name' => $name,
                 'parent' => $parentId,
                 'children' => $childIds,
                 'settings' => $settings,
             ];
+            // Keep remaining native top-level keys (isInner, isLocked, ...) for a lossless round-trip
+            foreach ($node as $k => $v) {
+                if (!in_array($k, ['id', 'elType', 'widgetType', 'settings', 'elements'], true) && !isset($flatNode[$k])) {
+                    $flatNode[$k] = $v;
+                }
+            }
+            $flat[] = $flatNode;
 
             foreach ($children as $child) {
                 if (is_array($child)) {

@@ -190,6 +190,11 @@ final class Expander
         // Map classes -> _cssGlobalClasses (merged with any dangling classes preserved in extra)
         $classSettingKey = (string) ($schema['class_setting'] ?? '_cssGlobalClasses');
         $classMode = (string) ($schema['class_ref_mode'] ?? 'id');
+        $isElementor = ($schema['builder'] ?? '') === 'elementor';
+        if ($isElementor && isset($settings[$classSettingKey]) && is_string($settings[$classSettingKey])) {
+            // Elementor stores CSS classes as a space-separated string
+            $settings[$classSettingKey] = preg_split('/\s+/', trim($settings[$classSettingKey]), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        }
         $danglingIds = isset($settings[$classSettingKey]) && is_array($settings[$classSettingKey])
             ? $settings[$classSettingKey]
             : [];
@@ -212,8 +217,16 @@ final class Expander
             $settings[$classSettingKey] = $danglingIds;
         }
 
+        if ($isElementor && isset($settings[$classSettingKey]) && is_array($settings[$classSettingKey])) {
+            $settings[$classSettingKey] = implode(' ', array_map('strval', $settings[$classSettingKey]));
+        }
+
         // Map lean keys -> native settings (lean wins over extra on overlap)
-        $this->applyLeanSettings($type, $typeSpec, $element, $settings, $vocab, $usedIds);
+        if ($isElementor) {
+            $this->applyElementorSettings($type, $typeSpec, $element, $settings, $usedIds, $vocab);
+        } else {
+            $this->applyLeanSettings($type, $typeSpec, $element, $settings, $vocab, $usedIds);
+        }
 
         // Reserve slot in flatElements so parent precedes children in the flat array
         $currentIndex = count($flatElements);
@@ -444,6 +457,107 @@ final class Expander
                         $nativeItems[] = $nativeItem;
                     }
                     $settings['items'] = $nativeItems;
+                }
+                break;
+        }
+    }
+
+    /**
+     * Elementor variant of applyLeanSettings(); mirrors Compactor::extractElementorSettings().
+     *
+     * @param array<string, mixed> $typeSpec
+     * @param array<string, mixed> $element
+     * @param array<string, mixed> $settings
+     * @param array<string, true> $usedIds
+     */
+    private function applyElementorSettings(
+        string $type,
+        array $typeSpec,
+        array $element,
+        array &$settings,
+        array &$usedIds,
+        SiteVocabulary $vocab
+    ): void {
+        switch ($type) {
+            case 'heading':
+                if (isset($element['text']) && is_string($element['text'])) {
+                    $settings[(string) ($typeSpec['text_key'] ?? 'title')] = $element['text'];
+                }
+                if (isset($element['tag']) && is_string($element['tag'])) {
+                    $settings[(string) ($typeSpec['tag_key'] ?? 'header_size')] = $element['tag'];
+                }
+                break;
+
+            case 'text':
+                if (isset($element['html']) && is_string($element['html'])) {
+                    $settings[(string) ($typeSpec['text_key'] ?? 'editor')] = $element['html'];
+                }
+                unset($settings['_ln_html_sha256']);
+                break;
+
+            case 'button':
+                if (isset($element['text']) && is_string($element['text'])) {
+                    $settings[(string) ($typeSpec['text_key'] ?? 'text')] = $element['text'];
+                }
+                if (isset($element['link']) && is_string($element['link'])) {
+                    $linkKey = (string) ($typeSpec['link_key'] ?? 'link');
+                    $existingLink = isset($settings[$linkKey]) && is_array($settings[$linkKey]) ? $settings[$linkKey] : [];
+                    $existingLink['url'] = $element['link'];
+                    $settings[$linkKey] = $existingLink;
+                }
+                break;
+
+            case 'image':
+                $existingImg = isset($settings['image']) && is_array($settings['image']) ? $settings['image'] : [];
+                if (isset($element['media_id']) && is_int($element['media_id'])) {
+                    $existingImg['id'] = $element['media_id'];
+                    $existingImg['source'] = $existingImg['source'] ?? 'library';
+                }
+                if (isset($element['url']) && is_string($element['url'])) {
+                    $existingImg['url'] = $element['url'];
+                }
+                if (isset($element['alt']) && is_string($element['alt'])) {
+                    $existingImg['alt'] = $element['alt'];
+                }
+                if ($existingImg !== []) {
+                    $settings['image'] = $existingImg;
+                }
+                break;
+
+            case 'icon':
+                if (isset($element['icon']) && is_string($element['icon'])) {
+                    $parts = explode(':', $element['icon'], 2);
+                    $existingIcon = isset($settings['selected_icon']) && is_array($settings['selected_icon']) ? $settings['selected_icon'] : [];
+                    $existingIcon['library'] = $parts[0];
+                    $existingIcon['value'] = $parts[1] ?? '';
+                    $settings['selected_icon'] = $existingIcon;
+                }
+                break;
+
+            case 'list':
+                if (isset($element['items']) && is_array($element['items'])) {
+                    $nativeItems = [];
+                    foreach ($element['items'] as $leanItem) {
+                        if (!is_array($leanItem)) {
+                            continue;
+                        }
+                        $nativeItem = [];
+                        if (isset($leanItem['extra']) && is_string($leanItem['extra'])) {
+                            $decodedItem = ExtraCodec::decode($leanItem['extra'], $vocab, 'list_item');
+                            if (is_array($decodedItem['item'] ?? null)) {
+                                $nativeItem = $decodedItem['item'];
+                            }
+                        }
+                        $nativeItem['_id'] = $this->nextUniqueId($usedIds);
+                        $nativeItem['text'] = (string) ($leanItem['text'] ?? '');
+                        if (isset($leanItem['link']) && is_string($leanItem['link'])) {
+                            $existingLink = isset($nativeItem['link']) && is_array($nativeItem['link']) ? $nativeItem['link'] : [];
+                            $existingLink['url'] = $leanItem['link'];
+                            $nativeItem['link'] = $existingLink;
+                        }
+                        $nativeItems[] = $nativeItem;
+                    }
+                    $settings['icon_list'] = $nativeItems;
                 }
                 break;
         }

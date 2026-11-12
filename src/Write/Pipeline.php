@@ -2005,6 +2005,12 @@ final class Pipeline
             }
 
             $name = (string) ($el['name'] ?? '');
+
+            if ($this->adapter->name() === 'elementor') {
+                $el['settings'] = $this->sanitizeElementorSettings($name, $el['settings']);
+                continue;
+            }
+
             if ($name === 'text' && isset($el['settings']['text']) && is_string($el['settings']['text'])) {
                 $el['settings']['text'] = wp_kses_post($el['settings']['text']);
             } elseif (in_array($name, ['heading', 'button'], true) && isset($el['settings']['text']) && is_string($el['settings']['text'])) {
@@ -2042,6 +2048,66 @@ final class Pipeline
         unset($el);
 
         return $nativeElements;
+    }
+
+    /**
+     * Elementor counterpart of the Bricks sanitization above (native keys differ per widget).
+     *
+     * @param array<string, mixed> $settings
+     * @return array<string, mixed>
+     */
+    private function sanitizeElementorSettings(string $widget, array $settings): array
+    {
+        if (isset($settings['_title']) && is_string($settings['_title'])) {
+            $settings['_title'] = sanitize_text_field($settings['_title']);
+        }
+
+        switch ($widget) {
+            case 'text-editor':
+                if (isset($settings['editor']) && is_string($settings['editor'])) {
+                    $settings['editor'] = wp_kses_post($settings['editor']);
+                }
+                break;
+            case 'heading':
+                if (isset($settings['title']) && is_string($settings['title'])) {
+                    $settings['title'] = sanitize_text_field($settings['title']);
+                }
+                break;
+            case 'button':
+                if (isset($settings['text']) && is_string($settings['text'])) {
+                    $settings['text'] = sanitize_text_field($settings['text']);
+                }
+                if (isset($settings['link']['url']) && is_string($settings['link']['url'])) {
+                    $settings['link']['url'] = $this->sanitizeUrlOrDynamicTag($settings['link']['url']);
+                }
+                break;
+            case 'image':
+                if (isset($settings['image']['url']) && is_string($settings['image']['url'])) {
+                    $settings['image']['url'] = $this->sanitizeUrlOrDynamicTag($settings['image']['url']);
+                }
+                if (isset($settings['image']['alt']) && is_string($settings['image']['alt'])) {
+                    $settings['image']['alt'] = sanitize_text_field($settings['image']['alt']);
+                }
+                break;
+            case 'icon-list':
+                if (isset($settings['icon_list']) && is_array($settings['icon_list'])) {
+                    foreach ($settings['icon_list'] as &$item) {
+                        if (!is_array($item)) {
+                            continue;
+                        }
+                        if (isset($item['text']) && is_string($item['text'])) {
+                            $item['text'] = sanitize_text_field($item['text']);
+                        }
+                        if (isset($item['link']['url']) && is_string($item['link']['url'])) {
+                            $item['link']['url'] = $this->sanitizeUrlOrDynamicTag($item['link']['url']);
+                        }
+                    }
+                    unset($item);
+                }
+                break;
+        }
+
+        return $settings;
     }
 
     private function sanitizeUrlOrDynamicTag(string $url): string

@@ -120,7 +120,7 @@ final class Responder
     /**
      * Wrap a route callback with:
      * 1. Active builder check (`501 builder_unsupported` when $requireBuilder is true)
-     * 2. Top-level Throwable guard (`500 write_failed` with correlation ID in `meta.request_id`)
+     * 2. Top-level Throwable guard (`500 internal_error` with correlation ID in `meta.request_id`)
      *
      * @param callable(\WP_REST_Request, ?\LiveNetworks\BuilderConnector\Builders\BuilderAdapter): \WP_REST_Response $handler
      * @return callable(\WP_REST_Request): \WP_REST_Response
@@ -153,9 +153,10 @@ final class Responder
                     $e->getLine()
                 ));
 
+                // Not `write_failed`: this guard also covers read-only routes, and nothing was written or restored.
                 return self::error(
-                    'write_failed',
-                    'An unexpected internal error occurred while processing the request.',
+                    'internal_error',
+                    sprintf('An unexpected internal error occurred while processing the request (request_id %s).', $requestId),
                     500
                 );
             }

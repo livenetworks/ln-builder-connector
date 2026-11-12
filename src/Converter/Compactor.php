@@ -178,9 +178,14 @@ final class Compactor
             return $this->compactPassthrough($id, $isRoot, $byId, $vocab, $visited);
         }
 
+        $isElementor = ($schema['builder'] ?? '') === 'elementor';
         $leanType = $nativeToLean[$nativeName]['lean_type'];
         $spec = $nativeToLean[$nativeName]['spec'];
         $isContainer = (bool) ($spec['container'] ?? false);
+        if ($isElementor && $isContainer) {
+            // Elementor has a single `container` native type: roots read back as sections, nested ones as containers.
+            $leanType = $isRoot ? 'section' : 'container';
+        }
 
         $out = [];
         if ($isRoot) {
@@ -194,9 +199,21 @@ final class Compactor
         $settings = is_array($el['settings'] ?? null) ? $el['settings'] : [];
         $remainingSettings = $settings;
 
+        if ($isElementor && !isset($out['label']) && isset($remainingSettings['_title']) && is_string($remainingSettings['_title']) && $remainingSettings['_title'] !== '') {
+            $out = ['label' => $remainingSettings['_title']] + $out;
+            if (isset($out['ref'])) {
+                $out = ['ref' => $out['ref']] + $out;
+            }
+            unset($remainingSettings['_title']);
+        }
+
         // 1. Extract global classes
         $classSettingKey = (string) ($schema['class_setting'] ?? '_cssGlobalClasses');
         $danglingClassIds = [];
+        if ($isElementor && isset($remainingSettings[$classSettingKey]) && is_string($remainingSettings[$classSettingKey])) {
+            // Elementor stores CSS classes as a space-separated string
+            $remainingSettings[$classSettingKey] = preg_split('/\s+/', trim($remainingSettings[$classSettingKey]), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        }
         if (isset($remainingSettings[$classSettingKey]) && is_array($remainingSettings[$classSettingKey])) {
             $resolvedNames = [];
             foreach ($remainingSettings[$classSettingKey] as $cIdx => $rawClassId) {
@@ -225,18 +242,27 @@ final class Compactor
         }
 
         // 2. Map type-specific settings to lean keys
-        $this->extractLeanSettings($leanType, $spec, $remainingSettings, $out, $vocab);
+        if ($isElementor) {
+            $this->extractElementorSettings($leanType, $spec, $remainingSettings, $out, $vocab);
+        } else {
+            $this->extractLeanSettings($leanType, $spec, $remainingSettings, $out, $vocab);
+        }
 
         // 3. Clean empty settings before building extra
         $remainingSettings = $this->stripEmptySettings($remainingSettings);
         if ($danglingClassIds !== []) {
-            $remainingSettings[$classSettingKey] = $danglingClassIds;
+            $remainingSettings[$classSettingKey] = $isElementor ? implode(' ', $danglingClassIds) : $danglingClassIds;
         }
 
         // 4. Capture any top-level native properties outside standard ones (e.g. themeStyles, cid, etc.)
+        // Elementor `isInner` is derived from the parent on write, so it is not carried in extra.
+        $skipTop = ['id', 'name', 'parent', 'children', 'settings', 'label'];
+        if ($isElementor) {
+            $skipTop[] = 'isInner';
+        }
         $extraTopLevel = [];
         foreach ($el as $k => $v) {
-            if (!in_array($k, ['id', 'name', 'parent', 'children', 'settings', 'label'], true)) {
+            if (!in_array($k, $skipTop, true)) {
                 $extraTopLevel[$k] = $v;
             }
         }
@@ -535,6 +561,163 @@ final class Compactor
                     unset($remainingSettings['items']);
                 }
                 break;
+        }
+    }
+
+    /**
+     * Elementor variant of extractLeanSettings(): native keys are `title`/`header_size`, `editor`,
+     * `link.url`, `image.{id,url,alt}`, `selected_icon.{library,value}` and `icon_list[]`.
+     *
+     * @param array<string, mixed> $spec
+     * @param array<string, mixed> $remainingSettings
+     * @param array<string, mixed> $out
+     */
+    private function extractElementorSettings(
+        string $leanType,
+        array $spec,
+        array &$remainingSettings,
+        array &$out,
+        SiteVocabulary $vocab
+    ): void {
+        switch ($leanType) {
+            case 'heading':
+                $tagKey = (string) ($spec['tag_key'] ?? 'header_size');
+                $textKey = (string) ($spec['text_key'] ?? 'title');
+                if (isset($remainingSettings[$tagKey]) && is_string($remainingSettings[$tagKey])) {
+                    $allowedTags = is_array($spec['allowed_tags'] ?? null) ? $spec['allowed_tags'] : ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'div'];
+                    if (in_array($remainingSettings[$tagKey], $allowedTags, true)) {
+                        $out['tag'] = $remainingSettings[$tagKey];
+                        unset($remainingSettings[$tagKey]);
+                    }
+                }
+                if (isset($remainingSettings[$textKey]) && is_string($remainingSettings[$textKey])) {
+                    $out['text'] = $remainingSettings[$textKey];
+                    unset($remainingSettings[$textKey]);
+                }
+                break;
+
+            case 'text':
+                $textKey = (string) ($spec['text_key'] ?? 'editor');
+                if (isset($remainingSettings[$textKey]) && is_string($remainingSettings[$textKey])) {
+                    $html = $remainingSettings[$textKey];
+                    $out['html'] = $html;
+                    unset($remainingSettings[$textKey]);
+                    if (
+                        preg_match('/<[a-z0-9:-]+[^>]*\s(?:style|class|color)\s*=/i', $html) === 1
+                        || preg_match('/<\s*(?:style|font)\b/i', $html) === 1
+                    ) {
+                        $remainingSettings['_ln_html_sha256'] = hash('sha256', $html);
+                    }
+                }
+                break;
+
+            case 'button':
+                $textKey = (string) ($spec['text_key'] ?? 'text');
+                $linkKey = (string) ($spec['link_key'] ?? 'link');
+                if (isset($remainingSettings[$textKey]) && is_string($remainingSettings[$textKey])) {
+                    $out['text'] = $remainingSettings[$textKey];
+                    unset($remainingSettings[$textKey]);
+                }
+                if (isset($remainingSettings[$linkKey]) && is_array($remainingSettings[$linkKey])) {
+                    $this->takeElementorLink($remainingSettings[$linkKey], $out);
+                    if ($remainingSettings[$linkKey] === []) {
+                        unset($remainingSettings[$linkKey]);
+                    }
+                }
+                break;
+
+            case 'image':
+                if (isset($remainingSettings['image']) && is_array($remainingSettings['image'])) {
+                    $imgArr = $remainingSettings['image'];
+                    if (isset($imgArr['id']) && is_numeric($imgArr['id']) && (int) $imgArr['id'] > 0) {
+                        $out['media_id'] = (int) $imgArr['id'];
+                        unset($imgArr['id']);
+                    }
+                    if (isset($imgArr['url']) && is_string($imgArr['url']) && $imgArr['url'] !== '') {
+                        $out['url'] = $imgArr['url'];
+                        unset($imgArr['url']);
+                    }
+                    if (isset($imgArr['alt']) && is_string($imgArr['alt'])) {
+                        $out['alt'] = $imgArr['alt'];
+                        unset($imgArr['alt']);
+                    }
+                    if ($imgArr === []) {
+                        unset($remainingSettings['image']);
+                    } else {
+                        $remainingSettings['image'] = $imgArr;
+                    }
+                }
+                break;
+
+            case 'icon':
+                if (isset($remainingSettings['selected_icon']) && is_array($remainingSettings['selected_icon'])) {
+                    $iconArr = $remainingSettings['selected_icon'];
+                    $lib = (string) ($iconArr['library'] ?? '');
+                    $val = $iconArr['value'] ?? '';
+                    if ($lib !== '' && is_string($val) && $val !== '') {
+                        $out['icon'] = $lib . ':' . $val;
+                        unset($iconArr['library'], $iconArr['value']);
+                        if ($iconArr === []) {
+                            unset($remainingSettings['selected_icon']);
+                        } else {
+                            $remainingSettings['selected_icon'] = $iconArr;
+                        }
+                    }
+                }
+                break;
+
+            case 'list':
+                if (isset($remainingSettings['icon_list']) && is_array($remainingSettings['icon_list']) && array_is_list($remainingSettings['icon_list'])) {
+                    $leanItems = [];
+                    foreach ($remainingSettings['icon_list'] as $rawItem) {
+                        if (!is_array($rawItem)) {
+                            continue;
+                        }
+                        $itemRest = $rawItem;
+                        $leanItem = [
+                            'text' => isset($itemRest['text']) && is_string($itemRest['text']) ? $itemRest['text'] : '',
+                        ];
+                        unset($itemRest['text'], $itemRest['_id']);
+                        if (isset($itemRest['link']) && is_array($itemRest['link'])) {
+                            $this->takeElementorLink($itemRest['link'], $leanItem);
+                            if ($itemRest['link'] === []) {
+                                unset($itemRest['link']);
+                            }
+                        }
+                        if ($vocab->extraEnabled() && $itemRest !== []) {
+                            $leanItem['extra'] = ExtraCodec::encode(
+                                ['_native_name' => 'list_item', 'item' => $itemRest],
+                                $vocab,
+                                'list_item'
+                            );
+                        }
+                        $leanItems[] = $leanItem;
+                    }
+                    if ($leanItems !== []) {
+                        $out['items'] = $leanItems;
+                    }
+                    unset($remainingSettings['icon_list']);
+                }
+                break;
+        }
+    }
+
+    /**
+     * Move an Elementor URL control value into lean `link`, dropping default empty flags.
+     *
+     * @param array<string, mixed> $link
+     * @param array<string, mixed> $out
+     */
+    private function takeElementorLink(array &$link, array &$out): void
+    {
+        if (isset($link['url']) && is_string($link['url']) && $link['url'] !== '') {
+            $out['link'] = $link['url'];
+        }
+        unset($link['url']);
+        foreach (['is_external', 'nofollow', 'custom_attributes'] as $flag) {
+            if (array_key_exists($flag, $link) && ($link[$flag] === '' || $link[$flag] === false || $link[$flag] === null)) {
+                unset($link[$flag]);
+            }
         }
     }
 
