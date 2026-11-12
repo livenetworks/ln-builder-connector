@@ -269,6 +269,7 @@ final class ElementorAdapter implements BuilderAdapter
             'post_title' => $title,
             'post_type' => self::POST_TYPE_TEMPLATE,
             'post_status' => 'draft',
+            'post_author' => Installer::contentOwnerId(),
         ];
         if ($slug !== null && $slug !== '') {
             $postData['post_name'] = $slug;
@@ -355,6 +356,7 @@ final class ElementorAdapter implements BuilderAdapter
             'post_title' => $title,
             'post_type' => 'page',
             'post_status' => 'draft',
+            'post_author' => Installer::contentOwnerId(),
         ];
         if ($slug !== null && $slug !== '') {
             $postData['post_name'] = $slug;
