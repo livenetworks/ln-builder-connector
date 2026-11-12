@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build the runtime-only `main` branch from `development`.
 #
+#   git release               same as below, from any branch (alias: reads this script from development)
 #   bin/release.sh            run tests, build main from development, push both branches
 #   bin/release.sh --dry-run  show what main would contain, change nothing
 #   bin/release.sh --no-push  build main locally, don't push
@@ -72,9 +73,12 @@ echo "Changes $DST -> new release from $SRC@$SRC_SHA:"
 git diff --stat "$DST" "$TREE"
 [ "$DRY" = 1 ] && exit 0
 
+# Changelog = development commits since the previous release (or since main's tip for the first one)
+PREV=$(git log -1 --grep='^release: sync from' --format=%s "$DST" | sed -n 's/.*@\([0-9a-f]*\)$/\1/p')
+RANGE="${PREV:-$DST}..$SRC"
 MSG="release: sync from $SRC@$SRC_SHA
 
-$(git log --format='- %s' "$(git rev-parse "$DST")..$SRC" -- 2>/dev/null | grep -v '^- release:' | head -50 || true)"
+$(git log --format='- %s' "$RANGE" 2>/dev/null | head -50 || true)"
 COMMIT=$(git commit-tree "$TREE" -p "$DST" -m "$MSG")
 git update-ref "refs/heads/$DST" "$COMMIT"
 

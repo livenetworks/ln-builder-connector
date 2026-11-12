@@ -8,9 +8,15 @@
 
 ## Release
 ```
-bin/release.sh --dry-run   # preview what main would get
-bin/release.sh             # tests + build main + push both branches
+git release --dry-run   # preview what main would get
+git release             # tests + build main + push both branches
+git release --no-push   # build main locally only
 ```
+`git release` is a repo-local alias (works from `main`, where `bin/` doesn't exist):
+```
+git config alias.release '!f() { git show development:bin/release.sh | bash -s -- "$@"; }; f'
+```
+On `development` you can also run `bin/release.sh` directly.
 The live WordPress install keeps `main` checked out; the script updates its files in place.
 
 ## Tests
