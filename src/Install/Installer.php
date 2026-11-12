@@ -14,6 +14,7 @@ final class Installer
     public const OPTION_BRIDGE_USER_ID = 'ln_builder_bridge_user_id';
     public const OPTION_CONTENT_OWNER = 'ln_builder_content_owner';
     public const OPTION_DETECTED_STATUS = 'ln_builder_detected_status';
+    public const OPTION_AUTHOR_FIX = 'ln_builder_author_fix_done';
     public const ROLE_NAME = 'ln_builder_bridge';
     public const USER_LOGIN = 'ln-builder-connector';
     public const CRON_HOOK = 'ln_builder_hourly_cleanup';
@@ -119,6 +120,46 @@ final class Installer
             self::ensureOptions();
             self::ensureRoleAndUser();
         }
+
+        // One-time: content created before the author fix still has the bridge account as author
+        if (get_option(self::OPTION_AUTHOR_FIX) !== '1') {
+            self::reassignBridgeAuthoredContent();
+            update_option(self::OPTION_AUTHOR_FIX, '1', true);
+        }
+    }
+
+    /**
+     * Move authorship of everything the bridge account created (pages, templates, media, kit)
+     * to the real content owner. Revisions keep the bridge account so the edit history stays truthful.
+     */
+    public static function reassignBridgeAuthoredContent(): int
+    {
+        global $wpdb;
+
+        $bridgeUserId = (int) get_option(self::OPTION_BRIDGE_USER_ID, 0);
+        $ownerId = self::contentOwnerId();
+        if ($bridgeUserId <= 0 || $ownerId <= 0 || $ownerId === $bridgeUserId) {
+            return 0;
+        }
+
+        $ids = $wpdb->get_col($wpdb->prepare(
+            "SELECT ID FROM {$wpdb->posts} WHERE post_author = %d AND post_type <> 'revision'",
+            $bridgeUserId
+        ));
+        if (empty($ids)) {
+            return 0;
+        }
+
+        $wpdb->query($wpdb->prepare(
+            "UPDATE {$wpdb->posts} SET post_author = %d WHERE post_author = %d AND post_type <> 'revision'",
+            $ownerId,
+            $bridgeUserId
+        ));
+        foreach ($ids as $id) {
+            clean_post_cache((int) $id);
+        }
+
+        return count($ids);
     }
 
     public static function ensureDatabase(): void
@@ -296,6 +337,24 @@ CREATE TABLE {$idempotencyTable} (
             return $user;
         }, 30, 2);
 
+        // Anything inserted while the bridge account is the current user (pages, templates, media,
+        // Elementor kit, ...) is attributed to a real WordPress user, never to the system account.
+        // Revisions are left alone so the edit history still shows the connector.
+        add_filter('wp_insert_post_data', static function (array $data): array {
+            $bridgeUserId = (int) get_option(self::OPTION_BRIDGE_USER_ID, 0);
+            if (
+                $bridgeUserId > 0
+                && (int) ($data['post_author'] ?? 0) === $bridgeUserId
+                && ($data['post_type'] ?? '') !== 'revision'
+            ) {
+                $ownerId = self::contentOwnerId();
+                if ($ownerId > 0 && $ownerId !== $bridgeUserId) {
+                    $data['post_author'] = $ownerId;
+                }
+            }
+            return $data;
+        }, 10, 1);
+
         // Disable password resets for the bridge user
         add_filter('allow_password_reset', static function (bool $allow, int $userId): bool {
             $bridgeUserId = (int) get_option(self::OPTION_BRIDGE_USER_ID, 0);
@@ -341,8 +400,9 @@ CREATE TABLE {$idempotencyTable} (
 
     public static function contentOwnerId(): int
     {
+        $bridgeUserId = (int) get_option(self::OPTION_BRIDGE_USER_ID, 0);
         $ownerId = (int) get_option(self::OPTION_CONTENT_OWNER, 0);
-        if ($ownerId > 0 && get_userdata($ownerId) && user_can($ownerId, 'edit_pages')) {
+        if ($ownerId > 0 && $ownerId !== $bridgeUserId && get_userdata($ownerId) && user_can($ownerId, 'edit_pages')) {
             return $ownerId;
         }
 
@@ -470,6 +530,7 @@ CREATE TABLE {$idempotencyTable} (
             self::OPTION_BRIDGE_USER_ID,
             self::OPTION_CONTENT_OWNER,
             self::OPTION_DETECTED_STATUS,
+            self::OPTION_AUTHOR_FIX,
             \LiveNetworks\BuilderConnector\Connect\PlatformState::OPTION_PLATFORM,
             \LiveNetworks\BuilderConnector\Auth\JwksClient::OPTION_JWKS_CACHE,
             \LiveNetworks\BuilderConnector\Auth\JwksClient::OPTION_LAST_REFRESH_ATTEMPT,
