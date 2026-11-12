@@ -1,0 +1,12 @@
+[{"id":"a1","elType":"container","isInner":false,"settings":{"_css_classes":"hero custom-x","_title":"Hero","content_width":"boxed"},"elements":[
+  {"id":"b1","elType":"widget","widgetType":"heading","settings":{"title":"Welcome","header_size":"h1","align":"center"},"elements":[]},
+  {"id":"b2","elType":"widget","widgetType":"text-editor","settings":{"editor":"<p>Hello <strong>world</strong></p>"},"elements":[]},
+  {"id":"b3","elType":"widget","widgetType":"button","settings":{"text":"Go","link":{"url":"https://x.com","is_external":"on","nofollow":"","custom_attributes":""},"_css_classes":"btn-primary"},"elements":[]},
+  {"id":"c1","elType":"container","isInner":true,"settings":[],"elements":[
+     {"id":"b4","elType":"widget","widgetType":"image","settings":{"image":{"url":"https://x.com/a.jpg","id":42,"alt":"A","source":"library"}},"elements":[]},
+     {"id":"b5","elType":"widget","widgetType":"icon-list","settings":{"icon_list":[{"_id":"i1","text":"One","selected_icon":{"value":"fas fa-check","library":"fa-solid"},"link":{"url":""}}]},"elements":[]},
+     {"id":"b6","elType":"widget","widgetType":"icon","settings":{"selected_icon":{"value":"fas fa-star","library":"fa-solid"}},"elements":[]},
+     {"id":"b7","elType":"widget","widgetType":"form","settings":{"form_name":"Contact"},"elements":[]}
+  ]}
+]},
+{"id":"s1","elType":"section","settings":{"layout":"boxed"},"elements":[{"id":"col1","elType":"column","settings":{"_column_size":100},"elements":[{"id":"w1","elType":"widget","widgetType":"heading","settings":{"title":"Legacy"},"elements":[]}],"isInner":false}],"isInner":false}]
