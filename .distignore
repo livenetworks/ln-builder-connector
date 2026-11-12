@@ -1,0 +1,9 @@
+# Paths that exist only on `development` and are stripped from `main` (the runtime plugin branch).
+# One path per line, relative to the repo root. Directories without trailing slash.
+.distignore
+.gitignore
+README.md
+CLAUDE.md
+composer.json
+bin
+tests
